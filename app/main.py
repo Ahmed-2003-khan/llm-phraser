@@ -8,6 +8,10 @@ import os
 import logging
 from groq import AsyncGroq
 from contextlib import asynccontextmanager
+from dotenv import load_dotenv
+
+# --- Load environment variables from .env file ---
+load_dotenv()
 
 # Configure basic logging
 logging.basicConfig(level=logging.INFO)
