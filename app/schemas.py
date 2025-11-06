@@ -1,7 +1,8 @@
- 
+# E:\FYP\llm-phraser\app\schemas.py
 # Purpose: Defines the data contracts for the LLM Phraser (MS 5).
+# (Updated to Pydantic v2 ConfigDict)
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict  # <-- Import ConfigDict
 from typing import Literal, Dict, Any, Optional
 
 # =======================================================================
@@ -27,7 +28,6 @@ class PhraserInput(BaseModel):
     response_key: str = Field(
         ..., 
         description="A structured key to select the response template."
-        # e.g., "ACCEPT_FINAL", "REJECT_LOWBALL", "STANDARD_COUNTER"
     )
     
     # Optional field, only present if action is 'COUNTER'
@@ -37,9 +37,6 @@ class PhraserInput(BaseModel):
     )
     
     # --- Auditing & Metadata (from MS 4) ---
-    # We pass this through for logging, though this service
-    # won't use it to formulate a response.
-    
     policy_type: str = Field(
         ...,
         description="The type of policy that made this decision."
@@ -55,8 +52,8 @@ class PhraserInput(BaseModel):
         description="Additional data for audit/logging from MS 4."
     )
 
-    class Config:
-        # Example for documentation
+    # --- Pydantic v2 Update ---
+    model_config = ConfigDict(
         json_schema_extra = {
             "example": {
                 "action": "COUNTER",
@@ -67,6 +64,7 @@ class PhraserInput(BaseModel):
                 "decision_metadata": {"rule": "standard_counter_midpoint"}
             }
         }
+    )
 
 # =======================================================================
 #  API Output Schema
@@ -83,9 +81,11 @@ class PhraserOutput(BaseModel):
         description="The final, AI-generated, persuasive text response."
     )
     
-    class Config:
+    # --- Pydantic v2 Update ---
+    model_config = ConfigDict(
         json_schema_extra = {
             "example": {
                 "response_text": "That's a bit lower than we were expecting. Based on the market, I can meet you at $48,000. How does that sound?"
             }
         }
+    )
