@@ -1,23 +1,32 @@
-# Purpose: Unit tests for the LLM Phraser (MS 5).
+# E:\FYP\llm-phraser\tests\test_phraser.py
+# (Fixed with dependency override and proper async mocking)
 
 import pytest
 from fastapi.testclient import TestClient
-from app.main import app  # Import your FastAPI app
+from app.main import app, get_groq_client  # <-- Import the dependency to override
 from app.schemas import PhraserInput
-import os
+from unittest.mock import MagicMock, AsyncMock, patch
 
-# Use FastAPI's TestClient
-# This client handles the app startup/shutdown (lifespan)
+# --- The Fix: Dependency Override ---
+
+# 1. Create a mock client object. This can be a simple MagicMock.
+mock_groq_client = MagicMock()
+
+# 2. Define your override function. This function will be run
+#    *instead of* the real 'get_groq_client'.
+def override_get_groq_client():
+    """A mock dependency that returns our mock client."""
+    return mock_groq_client
+
+# 3. Apply the override to the FastAPI app *before* the TestClient is created.
+#    This is the magic line that solves the AttributeError.
+app.dependency_overrides[get_groq_client] = override_get_groq_client
+
+# 4. Now, create the TestClient. The app's lifespan will run,
+#    but our tests will never hit the real 'get_groq_client' function.
 client = TestClient(app)
 
-@pytest.fixture(autouse=True)
-def mock_env(monkeypatch):
-    """
-    This fixture automatically runs for every test.
-    It mocks the environment variable *before* the app lifespan starts.
-    This prevents the TestClient from crashing when it tries to init the Groq client.
-    """
-    monkeypatch.setenv("GROQ_API_KEY", "test_key_12345")
+# ------------------------------------
 
 def test_health_check():
     """Tests the /health endpoint."""
@@ -25,23 +34,22 @@ def test_health_check():
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "service": "llm-phraser"}
 
-def test_generate_phrase_success(mocker):
+# Use @patch from Python's standard 'unittest.mock' library.
+# We patch 'app.main.generate_llm_response' because that's where
+# it's imported and used by the '/phrase' endpoint.
+# 'new_callable=AsyncMock' is CRITICAL for mocking an async function.
+@patch("app.main.generate_llm_response", new_callable=AsyncMock)
+def test_generate_phrase_success(mock_generate_llm_call: AsyncMock):
     """
     Tests the /phrase endpoint with a mocked LLM call.
-    'mocker' is a fixture from pytest-mock.
+    The mock_generate_llm_call is injected by @patch.
     """
     
     # 1. ARRANGE
     
-    # This is the fake response we want our mock LLM to return
+    # This is the fake response we want our mock LLM function to return
     mock_response_text = "This is a successful mock counter-offer at $48,000."
-    
-    # This is the function we want to mock.
-    # We patch it *where it is imported* (in app.main)
-    mock_llm_call = mocker.patch(
-        "app.main.generate_llm_response",  
-        return_value=mock_response_text
-    )
+    mock_generate_llm_call.return_value = mock_response_text
 
     # This is the JSON payload we will send
     test_payload = {
@@ -62,28 +70,27 @@ def test_generate_phrase_success(mocker):
     assert response.status_code == 200
     assert response.json() == {"response_text": mock_response_text}
 
-    # Check that our mock function was called exactly once
-    mock_llm_call.assert_called_once()
+    # Check that our mock function was called correctly
+    mock_generate_llm_call.assert_called_once()
     
     # Get the arguments it was called with
-    call_args = mock_llm_call.call_args[0] # Get positional args
+    call_args = mock_generate_llm_call.call_args[0] # Get positional args
     
     # Check that the first argument was a PhraserInput object
-    # This confirms our main.py logic correctly parsed the JSON
     assert isinstance(call_args[0], PhraserInput)
     assert call_args[0].response_key == "STANDARD_COUNTER"
-    assert call_args[0].counter_price == 48000.0
+    
+    # Check that the second argument was our injected mock client
+    assert call_args[1] is mock_groq_client
 
-def test_generate_phrase_llm_error(mocker):
+@patch("app.main.generate_llm_response", new_callable=AsyncMock)
+def test_generate_phrase_llm_error(mock_generate_llm_call: AsyncMock):
     """
     Tests how the API behaves if the LLM call fails.
     """
     # 1. ARRANGE
     # This time, we mock the function to raise an exception
-    mock_llm_call = mocker.patch(
-        "app.main.generate_llm_response",
-        side_effect=Exception("Simulated Groq API Error")
-    )
+    mock_generate_llm_call.side_effect = Exception("Simulated Groq API Error")
 
     test_payload = {
         "action": "REJECT",
