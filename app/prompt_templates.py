@@ -1,12 +1,11 @@
 # Purpose: Manages and formats all prompt templates for the LLM.
-# (Upgraded to v1.1.2 - Senior Prompt Engineer Fix)
+# (Upgraded to v1.1.3 - Explicit REJECT_LOWBALL commands)
 
 from .schemas import PhraserInput
 from typing import Tuple
 import random
 
-# --- v1.1.2 System Persona (Task-Oriented) ---
-# This is a much stronger, more direct system prompt.
+# --- v1.1.2 System Persona (No Change) ---
 SYSTEM_PROMPT = (
     "You are a professional paraphrasing assistant for a sales agent named 'Alex'. "
     "Your one and only job is to rephrase the 'Template' given to you into a natural, 1-2 sentence response. "
@@ -19,19 +18,24 @@ SYSTEM_PROMPT = (
     "   Only state the prices you are given."
 )
 
-# --- v1.1.2 Prompt Variations (Now as "Templates" for the AI) ---
-# We now explicitly label them "Template:" to reinforce the new task.
+# --- v1.1.3 Prompt Variations (Hardened REJECT_LOWBALL) ---
 TEMPLATES = {
     "ACCEPT_FINAL": [
         "Template: We can accept {price}. It's a deal.",
         "Template: That works for us. We can agree to {price}.",
         "Template: You've got it. We accept {price}.",
     ],
+    
+    # --- THIS IS THE FIX ---
+    # We are now explicitly telling the AI *not* to counter.
+    # Its job is to paraphrase this entire instruction.
     "REJECT_LOWBALL": [
-        "Template: I'm sorry, but that offer is too low for us to consider.",
-        "Template: Unfortunately, that price is not workable for us.",
-        "Template: I can't accept that, it's too far from our valuation.",
+        "Template: Politely state that the offer is too low to be considered. Do not propose a counter-offer.",
+        "Template: Firmly reject this offer. Explain it is not workable. Do not suggest a new price.",
+        "Template: The offer is too low. Politely decline it and *do not* make a counter-offer.",
     ],
+    # ----------------------
+
     "STANDARD_COUNTER": [
         "Template: We can't meet you there, but my best price is {price}.",
         "Template: We're getting close! The best I can do for you right now is {price}.",
@@ -48,8 +52,8 @@ def get_formatted_prompt(input_data: PhraserInput) -> Tuple[str, str]:
     Selects and formats the appropriate prompt based on the
     response_key from the Strategy Engine.
     
-    v1.1.2 Update: The system_prompt now defines a "paraphrasing" task,
-    and the user_prompt is the template to be paraphrased.
+    v1.1.3 Update: REJECT_LOWBALL templates now contain explicit
+    "do not counter" instructions to be paraphrased.
     
     Returns a tuple of (system_prompt, user_prompt).
     """
@@ -57,16 +61,18 @@ def get_formatted_prompt(input_data: PhraserInput) -> Tuple[str, str]:
     key = input_data.response_key
     price = input_data.counter_price
 
-    # 1. Get the list of prompt templates, falling back to DEFAULT
+    # 1. Get the list of prompt templates
     prompt_list = TEMPLATES.get(key, TEMPLATES["DEFAULT"])
     
-    # 2. Select a random template from that list
+    # 2. Select a random template
     selected_template = random.choice(prompt_list)
     
     # 3. Format the selected prompt
     try:
         price_str = f"${price:,.0f}" if price is not None else ""
-        # The user_prompt is now the *full, formatted template*
+        
+        # This .format() call will safely ignore the 'price'
+        # argument for the new REJECT_LOWBALL templates.
         formatted_prompt = selected_template.format(price=price_str)
     except Exception as e:
         print(f"Error formatting prompt: {e}") # for debugging
