@@ -1,17 +1,18 @@
 # Purpose: Manages and formats all prompt templates for the LLM using LangChain.
-# Version: v2.0.0 - LangChain Integration with Contextual Prompts
+# Version: v2.1.0 - Multi-Example Prompt Support
 
 from langchain_core.prompts import ChatPromptTemplate
 from .schemas import PhraserInput
-from typing import Dict
+from typing import Dict, List
 import logging
+import random
 
 logger = logging.getLogger(__name__)
 
 # --- Security-Hardened System Prompt ---
 SYSTEM_PROMPT = (
     "You are a professional paraphrasing assistant for a sales agent named 'Alex'. "
-    "Your job is to convert instructions into natural, conversational responses. "
+    "Your job is to convert instructions or example templates into a single, natural, conversational response. "
     "\n\n**CRITICAL RULES:**\n"
     "1. You MUST use all prices and numbers exactly as provided in the instruction.\n"
     "2. You MUST NOT invent, hallucinate, or change any prices or numbers.\n"
@@ -21,77 +22,53 @@ SYSTEM_PROMPT = (
     "'my cost', 'my margin', or any internal financial metrics. Only state the prices given to you."
 )
 
-# --- Contextual Prompt Templates (LangChain) ---
-# Each template is mapped to a response_key from the Strategy Engine
+# --- Raw Template Variations ---
+# We define potential variations for each intent.
+# These will be presented to the LLM as "Examples of what we want to say".
 
-PROMPT_TEMPLATES: Dict[str, ChatPromptTemplate] = {
+TEMPLATE_VARIATIONS: Dict[str, List[str]] = {
     
-    # Professional, clear, deal-closing acceptance
-    "ACCEPT_FINAL": ChatPromptTemplate.from_messages([
-        ("system", SYSTEM_PROMPT),
-        ("user", 
-         "Convert this into a natural response:\n"
-         "Template: We can accept {price}. It's a deal. Let's finalize this."
-        )
-    ]),
+    "ACCEPT_FINAL": [
+        "We can accept {price}. It's a deal.",
+        "That works for us. We can agree to {price}.",
+        "You've got it. We accept {price}. Let's finalize this."
+    ],
     
-    # Reluctant acceptance (used when accepting due to user frustration)
-    "ACCEPT_SENTIMENT_CLOSE": ChatPromptTemplate.from_messages([
-        ("system", SYSTEM_PROMPT),
-        ("user", 
-         "Convert this into a natural response:\n"
-         "Template: Alright, I can see this is important to you. "
-         "We'll accept {price} to move forward. You've got a deal."
-        )
-    ]),
+    "ACCEPT_SENTIMENT_CLOSE": [
+        "Alright, I can see this is important to you. We'll accept {price} to move forward.",
+        "I understand your position. Ideally we'd want more, but we can do {price}.",
+        "To get this done today, I'll agree to {price}."
+    ],
     
-    # Firm, polite rejection WITHOUT counter-offer
-    # This is critical - the LLM must NOT generate a new price
-    "REJECT_LOWBALL": ChatPromptTemplate.from_messages([
-        ("system", SYSTEM_PROMPT),
-        ("user", 
-         "Convert this into a natural response:\n"
-         "Template: I appreciate the offer, but that price is too low for us to consider. "
-         "We cannot proceed at that level. Do NOT propose a counter-offer."
-        )
-    ]),
+    "REJECT_LOWBALL": [
+        "I appreciate the offer, but that price is too low for us to consider. Do NOT propose a counter-offer.",
+        "That offer doesn't work for us unfortunately. It's below our range. Do NOT counter.",
+        "We can't get there. That price is just too low. Do NOT suggest a new price."
+    ],
     
-    # Encouraging counter-offer ("we're getting close")
-    "STANDARD_COUNTER": ChatPromptTemplate.from_messages([
-        ("system", SYSTEM_PROMPT),
-        ("user", 
-         "Convert this into a natural response:\n"
-         "Template: We're getting close! I can't meet you at your last offer, "
-         "but my best price right now is {price}. How does that sound?"
-        )
-    ]),
+    "STANDARD_COUNTER": [
+        "We're getting close! I can't meet you at your last offer, but my best price right now is {price}.",
+        "I can't do that, but I can come down to {price}. How does that sound?",
+        "We have a bit of a gap. I can meet you halfway at {price}."
+    ],
     
-    # Firm, conclusive final offer
-    "COUNTER_FINAL_OFFER": ChatPromptTemplate.from_messages([
-        ("system", SYSTEM_PROMPT),
-        ("user", 
-         "Convert this into a natural response:\n"
-         "Template: This is my absolute final offer: {price}. "
-         "This is the best I can do, and I cannot go any lower. "
-         "This is my limit."
-        )
-    ]),
+    "COUNTER_FINAL_OFFER": [
+        "This is my absolute final offer: {price}. I cannot go any lower.",
+        "I've stretched as far as I can. {price} is my limit.",
+        "To be transparent, {price} is the absolute best I can do."
+    ],
     
-    # Fallback for unknown keys
-    "DEFAULT": ChatPromptTemplate.from_messages([
-        ("system", SYSTEM_PROMPT),
-        ("user", 
-         "Convert this into a natural response:\n"
-         "Template: Thanks for reaching out. How can I help you today?"
-        )
-    ])
+    "DEFAULT": [
+        "Thanks for reaching out. How can I help you today?",
+        "I'm here to help. What's on your mind?",
+    ]
 }
 
 
 def get_prompt_template(input_data: PhraserInput) -> ChatPromptTemplate:
     """
-    Selects the appropriate LangChain ChatPromptTemplate based on 
-    the response_key from the Strategy Engine.
+    Constructs a LangChain ChatPromptTemplate that includes multiple examples
+    for the given response_key.
     
     Args:
         input_data: The PhraserInput containing the response_key
@@ -101,23 +78,35 @@ def get_prompt_template(input_data: PhraserInput) -> ChatPromptTemplate:
     """
     key = input_data.response_key
     
-    # Get the template, defaulting to DEFAULT if key not found
-    template = PROMPT_TEMPLATES.get(key, PROMPT_TEMPLATES["DEFAULT"])
+    # Get the list of variations, defaulting if key not found
+    variations = TEMPLATE_VARIATIONS.get(key, TEMPLATE_VARIATIONS["DEFAULT"])
     
-    logger.info(f"Selected prompt template for key: {key}")
+    # We join all variations into a single string to show the LLM the "Vibe/Range"
+    # or we could select one randomly. The user requested "keep multiple response strings...
+    # so the LLM can generate responses based on them".
+    #
+    # Strategy: Present all variations as a list of "Reference Styles".
     
-    return template
+    formatted_variations = "\n".join([f"- {v}" for v in variations])
+    
+    user_message_content = (
+        f"Here are varying examples of how we want to respond to the customer:\n\n"
+        f"{formatted_variations}\n\n"
+        f"Task: Generate a single, natural response that captures the intent of these examples. "
+        f"Paraphrase it naturally."
+    )
+    
+    logger.info(f"Selected {len(variations)} variations for key: {key}")
+    
+    return ChatPromptTemplate.from_messages([
+        ("system", SYSTEM_PROMPT),
+        ("user", user_message_content)
+    ])
 
 
 def format_price(price: float) -> str:
     """
     Formats a price value as a currency string.
-    
-    Args:
-        price: The price value to format
-        
-    Returns:
-        Formatted price string (e.g., "$48,000")
     """
     if price is None:
         return ""
