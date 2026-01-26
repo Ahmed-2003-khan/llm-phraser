@@ -1,82 +1,124 @@
-# Purpose: Manages and formats all prompt templates for the LLM.
-# (Upgraded to v1.1.3 - Explicit REJECT_LOWBALL commands)
+# Purpose: Manages and formats all prompt templates for the LLM using LangChain.
+# Version: v2.0.0 - LangChain Integration with Contextual Prompts
 
+from langchain_core.prompts import ChatPromptTemplate
 from .schemas import PhraserInput
-from typing import Tuple
-import random
+from typing import Dict
+import logging
 
-# --- v1.1.2 System Persona (No Change) ---
+logger = logging.getLogger(__name__)
+
+# --- Security-Hardened System Prompt ---
 SYSTEM_PROMPT = (
     "You are a professional paraphrasing assistant for a sales agent named 'Alex'. "
-    "Your one and only job is to rephrase the 'Template' given to you into a natural, 1-2 sentence response. "
-    "You must follow these rules: "
-    "1. You MUST use all prices and numbers from the Template exactly as they are. "
-    "2. You MUST NOT add any new prices or numbers. "
-    "3. You MUST sound friendly, firm, and professional. "
-    "4. ***SECURITY GUARDRAIL***: You MUST NOT, under any circumstances, "
-    "   mention a 'floor price', 'minimum price', 'my cost', or 'my margin'. "
-    "   Only state the prices you are given."
+    "Your job is to convert instructions into natural, conversational responses. "
+    "\n\n**CRITICAL RULES:**\n"
+    "1. You MUST use all prices and numbers exactly as provided in the instruction.\n"
+    "2. You MUST NOT invent, hallucinate, or change any prices or numbers.\n"
+    "3. Your responses must be 1-2 sentences maximum.\n"
+    "4. Sound friendly, firm, and professional.\n"
+    "5. **SECURITY GUARDRAIL**: You MUST NOT mention 'floor price', 'minimum price', "
+    "'my cost', 'my margin', or any internal financial metrics. Only state the prices given to you."
 )
 
-# --- v1.1.3 Prompt Variations (Hardened REJECT_LOWBALL) ---
-TEMPLATES = {
-    "ACCEPT_FINAL": [
-        "Template: We can accept {price}. It's a deal.",
-        "Template: That works for us. We can agree to {price}.",
-        "Template: You've got it. We accept {price}.",
-    ],
-    
-    # --- THIS IS THE FIX ---
-    # We are now explicitly telling the AI *not* to counter.
-    # Its job is to paraphrase this entire instruction.
-    "REJECT_LOWBALL": [
-        "Template: Politely state that the offer is too low to be considered. Do not propose a counter-offer.",
-        "Template: Firmly reject this offer. Explain it is not workable. Do not suggest a new price.",
-        "Template: The offer is too low. Politely decline it and *do not* make a counter-offer.",
-    ],
-    # ----------------------
+# --- Contextual Prompt Templates (LangChain) ---
+# Each template is mapped to a response_key from the Strategy Engine
 
-    "STANDARD_COUNTER": [
-        "Template: We can't meet you there, but my best price is {price}.",
-        "Template: We're getting close! The best I can do for you right now is {price}.",
-        "Template: I can't accept your last offer, but I *can* meet you at {price}. Does that work?",
-    ],
-    "DEFAULT": [
-        "Template: Thanks for reaching out. How can I help?",
-        "Template: I'm here to help.",
-    ]
+PROMPT_TEMPLATES: Dict[str, ChatPromptTemplate] = {
+    
+    # Professional, clear, deal-closing acceptance
+    "ACCEPT_FINAL": ChatPromptTemplate.from_messages([
+        ("system", SYSTEM_PROMPT),
+        ("user", 
+         "Convert this into a natural response:\n"
+         "Template: We can accept {price}. It's a deal. Let's finalize this."
+        )
+    ]),
+    
+    # Reluctant acceptance (used when accepting due to user frustration)
+    "ACCEPT_SENTIMENT_CLOSE": ChatPromptTemplate.from_messages([
+        ("system", SYSTEM_PROMPT),
+        ("user", 
+         "Convert this into a natural response:\n"
+         "Template: Alright, I can see this is important to you. "
+         "We'll accept {price} to move forward. You've got a deal."
+        )
+    ]),
+    
+    # Firm, polite rejection WITHOUT counter-offer
+    # This is critical - the LLM must NOT generate a new price
+    "REJECT_LOWBALL": ChatPromptTemplate.from_messages([
+        ("system", SYSTEM_PROMPT),
+        ("user", 
+         "Convert this into a natural response:\n"
+         "Template: I appreciate the offer, but that price is too low for us to consider. "
+         "We cannot proceed at that level. Do NOT propose a counter-offer."
+        )
+    ]),
+    
+    # Encouraging counter-offer ("we're getting close")
+    "STANDARD_COUNTER": ChatPromptTemplate.from_messages([
+        ("system", SYSTEM_PROMPT),
+        ("user", 
+         "Convert this into a natural response:\n"
+         "Template: We're getting close! I can't meet you at your last offer, "
+         "but my best price right now is {price}. How does that sound?"
+        )
+    ]),
+    
+    # Firm, conclusive final offer
+    "COUNTER_FINAL_OFFER": ChatPromptTemplate.from_messages([
+        ("system", SYSTEM_PROMPT),
+        ("user", 
+         "Convert this into a natural response:\n"
+         "Template: This is my absolute final offer: {price}. "
+         "This is the best I can do, and I cannot go any lower. "
+         "This is my limit."
+        )
+    ]),
+    
+    # Fallback for unknown keys
+    "DEFAULT": ChatPromptTemplate.from_messages([
+        ("system", SYSTEM_PROMPT),
+        ("user", 
+         "Convert this into a natural response:\n"
+         "Template: Thanks for reaching out. How can I help you today?"
+        )
+    ])
 }
 
-def get_formatted_prompt(input_data: PhraserInput) -> Tuple[str, str]:
-    """
-    Selects and formats the appropriate prompt based on the
-    response_key from the Strategy Engine.
-    
-    v1.1.3 Update: REJECT_LOWBALL templates now contain explicit
-    "do not counter" instructions to be paraphrased.
-    
-    Returns a tuple of (system_prompt, user_prompt).
-    """
-    
-    key = input_data.response_key
-    price = input_data.counter_price
 
-    # 1. Get the list of prompt templates
-    prompt_list = TEMPLATES.get(key, TEMPLATES["DEFAULT"])
+def get_prompt_template(input_data: PhraserInput) -> ChatPromptTemplate:
+    """
+    Selects the appropriate LangChain ChatPromptTemplate based on 
+    the response_key from the Strategy Engine.
     
-    # 2. Select a random template
-    selected_template = random.choice(prompt_list)
-    
-    # 3. Format the selected prompt
-    try:
-        price_str = f"${price:,.0f}" if price is not None else ""
+    Args:
+        input_data: The PhraserInput containing the response_key
         
-        # This .format() call will safely ignore the 'price'
-        # argument for the new REJECT_LOWBALL templates.
-        formatted_prompt = selected_template.format(price=price_str)
-    except Exception as e:
-        print(f"Error formatting prompt: {e}") # for debugging
-        formatted_prompt = "Template: I'm not sure how to respond."
+    Returns:
+        A ChatPromptTemplate instance ready to be invoked
+    """
+    key = input_data.response_key
+    
+    # Get the template, defaulting to DEFAULT if key not found
+    template = PROMPT_TEMPLATES.get(key, PROMPT_TEMPLATES["DEFAULT"])
+    
+    logger.info(f"Selected prompt template for key: {key}")
+    
+    return template
 
-    # The system_prompt is static, the formatted_prompt is the "user" message
-    return SYSTEM_PROMPT, formatted_prompt
+
+def format_price(price: float) -> str:
+    """
+    Formats a price value as a currency string.
+    
+    Args:
+        price: The price value to format
+        
+    Returns:
+        Formatted price string (e.g., "$48,000")
+    """
+    if price is None:
+        return ""
+    return f"${price:,.0f}"
